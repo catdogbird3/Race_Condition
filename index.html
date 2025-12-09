@@ -3,7 +3,7 @@
  <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>競態條件時間序列圖</title>
+  <title>競態條件與 Mutex 解決方案</title>
   <script src="/_sdk/element_sdk.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -31,6 +31,11 @@
             filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3));
         }
         
+        .step-box.blocked {
+            opacity: 0.3 !important;
+            filter: grayscale(80%);
+        }
+        
         .memory-value {
             transition: background-color 0.3s ease, transform 0.2s ease;
         }
@@ -38,20 +43,66 @@
         .memory-value.highlight {
             transform: scale(1.1);
         }
+        
+        .mutex-indicator {
+            transition: all 0.4s ease;
+        }
+        
+        .mutex-locked {
+            animation: pulse 1s ease-in-out;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        
+        .mode-btn {
+            transition: all 0.3s ease;
+        }
     </style>
   <style>@view-transition { navigation: auto; }</style>
   <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
  </head>
  <body class="h-full">
   <div id="app" class="w-full h-full bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 overflow-auto">
-   <div class="container mx-auto px-4 py-8 max-w-6xl"><!-- Header -->
+   <div class="app-container mx-auto px-4 py-8 max-w-6xl"><!-- Header -->
     <div class="text-center mb-8">
      <h1 id="main-title" class="text-4xl font-bold text-white mb-2">競態條件視覺化</h1>
      <p id="subtitle" class="text-xl text-purple-300">了解多執行緒同時存取共享變數的問題</p>
+    </div><!-- Mode Selector -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20">
+     <h3 class="text-white text-lg font-semibold mb-4 text-center">選擇執行模式</h3>
+     <div class="flex flex-wrap gap-4 items-center justify-center"><button id="modeWithoutMutex" class="mode-btn bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-red-300"> ❌ 沒有 Mutex（有問題） </button> <button id="modeWithMutex" class="mode-btn bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-transparent"> ✅ 使用 Mutex（正確） </button>
+     </div>
+     <div id="modeDescription" class="mt-4 text-center text-purple-200 font-semibold">
+      目前模式：沒有 Mutex 保護
+     </div>
     </div><!-- Control Panel -->
     <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20">
      <div class="flex flex-wrap gap-4 items-center justify-center"><button id="playBtn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg"> ▶ 開始執行 </button> <button id="resetBtn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg"> 🔄 重置 </button>
       <div class="flex items-center gap-2"><label for="speedSlider" class="text-white font-semibold">速度:</label> <input type="range" id="speedSlider" min="500" max="3000" value="1500" step="500" class="w-32"> <span id="speedLabel" class="text-white">普通</span>
+      </div>
+     </div>
+    </div><!-- Mutex Indicator (only visible in mutex mode) -->
+    <div id="mutexIndicator" class="hidden bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20">
+     <h2 class="text-2xl font-bold text-white mb-4 text-center">🔒 Mutex 狀態</h2>
+     <div class="flex justify-center items-center gap-8">
+      <div class="text-center">
+       <div class="text-purple-300 font-semibold mb-2">
+        Mutex 鎖
+       </div>
+       <div id="mutexStatus" class="mutex-indicator bg-gray-500 text-white font-bold text-2xl px-8 py-4 rounded-lg">
+        🔓 未鎖定
+       </div>
+      </div>
+      <div class="text-center">
+       <div class="text-purple-300 font-semibold mb-2">
+        持有者
+       </div>
+       <div id="mutexOwner" class="bg-gray-700 text-white font-bold text-2xl px-8 py-4 rounded-lg">
+        無
+       </div>
       </div>
      </div>
     </div><!-- Memory Display -->
@@ -77,6 +128,9 @@
      </div>
      <div id="warningMsg" class="hidden mt-4 bg-red-500 text-white p-4 rounded-lg text-center font-bold">
       ⚠️ 競態條件發生！最終值不正確！
+     </div>
+     <div id="successMsg" class="hidden mt-4 bg-green-500 text-white p-4 rounded-lg text-center font-bold">
+      ✅ Mutex 保護成功！結果正確！
      </div>
     </div><!-- Timeline -->
     <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
@@ -107,18 +161,27 @@
      </div>
     </div><!-- Explanation -->
     <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mt-8 border border-white/20">
-     <h2 class="text-2xl font-bold text-white mb-4">💡 為什麼會發生競態條件？</h2>
-     <div class="text-purple-200 space-y-3 leading-relaxed">
-      <p><strong class="text-yellow-400">問題核心：</strong>「讀取-修改-寫入」不是原子操作（atomic operation）</p>
-      <p>當兩個執行緒同時執行 <code class="bg-black/30 px-2 py-1 rounded text-cyan-400">counter++</code> 時：</p>
-      <ol class="list-decimal list-inside space-y-2 ml-4">
-       <li>執行緒 0 讀取 counter = 0</li>
-       <li>執行緒 1 也讀取 counter = 0（還沒被更新！）</li>
-       <li>執行緒 0 計算 0 + 1 = 1，寫入 counter</li>
-       <li>執行緒 1 計算 0 + 1 = 1，再次寫入 counter</li>
-       <li><strong class="text-red-400">結果：counter = 1（應該是 2！）</strong></li>
-      </ol>
-      <p class="mt-4"><strong class="text-green-400">解決方法：</strong>使用互斥鎖（Mutex）或信號量（Semaphore）來保護共享變數</p>
+     <h2 class="text-2xl font-bold text-white mb-4">💡 解說</h2>
+     <div id="explanationContent" class="text-purple-200 space-y-3 leading-relaxed"><!-- Content will be updated based on mode -->
+     </div>
+    </div><!-- Code Comparison -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mt-8 border border-white/20">
+     <h2 class="text-2xl font-bold text-white mb-4">📝 程式碼比較</h2>
+     <div class="grid md:grid-cols-2 gap-4"><!-- Without Mutex -->
+      <div class="bg-black/30 p-4 rounded-lg">
+       <h3 class="text-red-400 font-bold mb-2 text-lg">❌ 沒有 Mutex</h3>
+       <pre class="text-sm text-gray-300"><code>void thread_function(void) {
+    counter++;  // 不安全！
+}</code></pre>
+      </div><!-- With Mutex -->
+      <div class="bg-black/30 p-4 rounded-lg">
+       <h3 class="text-green-400 font-bold mb-2 text-lg">✅ 使用 Mutex</h3>
+       <pre class="text-sm text-gray-300"><code>void thread_function(void) {
+    k_mutex_lock(&amp;my_mutex);
+    counter++;  // 安全！
+    k_mutex_unlock(&amp;my_mutex);
+}</code></pre>
+      </div>
      </div>
     </div>
    </div>
@@ -131,15 +194,33 @@
             thread1_label: "執行緒 1"
         };
 
-        const steps = [
-            { thread: 0, action: "讀取", desc: "讀取 counter", color: "bg-cyan-500" },
-            { thread: 1, action: "讀取", desc: "讀取 counter", color: "bg-pink-500" },
-            { thread: 0, action: "計算", desc: "counter + 1", color: "bg-cyan-600" },
-            { thread: 1, action: "計算", desc: "counter + 1", color: "bg-pink-600" },
-            { thread: 0, action: "寫入", desc: "寫入結果", color: "bg-cyan-700" },
-            { thread: 1, action: "寫入", desc: "寫入結果", color: "bg-pink-700" }
+        // Steps without mutex
+        const stepsWithoutMutex = [
+            { thread: 0, action: "讀取", desc: "讀取 counter = 0", color: "bg-cyan-500", value: 0 },
+            { thread: 1, action: "讀取", desc: "讀取 counter = 0", color: "bg-pink-500", value: 0 },
+            { thread: 0, action: "計算", desc: "0 + 1 = 1", color: "bg-cyan-600", value: null },
+            { thread: 1, action: "計算", desc: "0 + 1 = 1", color: "bg-pink-600", value: null },
+            { thread: 0, action: "寫入", desc: "寫入 counter = 1", color: "bg-cyan-700", value: 1 },
+            { thread: 1, action: "寫入", desc: "寫入 counter = 1", color: "bg-pink-700", value: 1 }
         ];
 
+        // Steps with mutex
+        const stepsWithMutex = [
+            { thread: 0, action: "🔒 鎖定", desc: "取得 Mutex", color: "bg-cyan-500", mutex: "lock", owner: 0 },
+            { thread: 0, action: "讀取", desc: "讀取 counter = 0", color: "bg-cyan-500", value: 0 },
+            { thread: 1, action: "⏳ 等待", desc: "等待 Mutex", color: "bg-pink-500", mutex: "wait", blocked: true },
+            { thread: 0, action: "計算", desc: "0 + 1 = 1", color: "bg-cyan-600", value: null },
+            { thread: 0, action: "寫入", desc: "寫入 counter = 1", color: "bg-cyan-700", value: 1 },
+            { thread: 0, action: "🔓 解鎖", desc: "釋放 Mutex", color: "bg-cyan-700", mutex: "unlock" },
+            { thread: 1, action: "🔒 鎖定", desc: "取得 Mutex", color: "bg-pink-500", mutex: "lock", owner: 1 },
+            { thread: 1, action: "讀取", desc: "讀取 counter = 1", color: "bg-pink-500", value: 1 },
+            { thread: 1, action: "計算", desc: "1 + 1 = 2", color: "bg-pink-600", value: null },
+            { thread: 1, action: "寫入", desc: "寫入 counter = 2", color: "bg-pink-700", value: 2 },
+            { thread: 1, action: "🔓 解鎖", desc: "釋放 Mutex", color: "bg-pink-700", mutex: "unlock" }
+        ];
+
+        let currentMode = 'without'; // 'without' or 'with'
+        let steps = stepsWithoutMutex;
         let currentStep = -1;
         let isPlaying = false;
         let animationSpeed = 1500;
@@ -150,6 +231,37 @@
             document.getElementById('subtitle').textContent = config.subtitle || defaultConfig.subtitle;
             document.getElementById('thread0-label').textContent = config.thread0_label || defaultConfig.thread0_label;
             document.getElementById('thread1-label').textContent = config.thread1_label || defaultConfig.thread1_label;
+        }
+
+        function updateExplanation() {
+            const explanationContent = document.getElementById('explanationContent');
+            if (currentMode === 'without') {
+                explanationContent.innerHTML = `
+                    <p><strong class="text-yellow-400">問題核心：</strong>「讀取-修改-寫入」不是原子操作（atomic operation）</p>
+                    <p>當兩個執行緒同時執行 <code class="bg-black/30 px-2 py-1 rounded text-cyan-400">counter++</code> 時：</p>
+                    <ol class="list-decimal list-inside space-y-2 ml-4">
+                        <li>執行緒 0 讀取 counter = 0</li>
+                        <li>執行緒 1 也讀取 counter = 0（還沒被更新！）</li>
+                        <li>執行緒 0 計算 0 + 1 = 1，寫入 counter</li>
+                        <li>執行緒 1 計算 0 + 1 = 1，再次寫入 counter</li>
+                        <li><strong class="text-red-400">結果：counter = 1（應該是 2！）</strong></li>
+                    </ol>
+                `;
+            } else {
+                explanationContent.innerHTML = `
+                    <p><strong class="text-green-400">Mutex 如何解決問題：</strong></p>
+                    <ol class="list-decimal list-inside space-y-2 ml-4">
+                        <li><strong class="text-cyan-400">執行緒 0</strong> 先鎖定 Mutex，獲得獨佔存取權</li>
+                        <li><strong class="text-pink-400">執行緒 1</strong> 嘗試鎖定但被阻擋，必須等待</li>
+                        <li><strong class="text-cyan-400">執行緒 0</strong> 完整執行：讀取(0) → 計算(+1) → 寫入(1)</li>
+                        <li><strong class="text-cyan-400">執行緒 0</strong> 解鎖 Mutex</li>
+                        <li><strong class="text-pink-400">執行緒 1</strong> 現在可以鎖定 Mutex</li>
+                        <li><strong class="text-pink-400">執行緒 1</strong> 完整執行：讀取(1) → 計算(+1) → 寫入(2)</li>
+                        <li><strong class="text-green-400">結果：counter = 2（正確！）</strong></li>
+                    </ol>
+                    <p class="mt-4"><strong class="text-yellow-400">關鍵概念：</strong>Mutex 確保「臨界區域」(critical section) 一次只有一個執行緒可以進入</p>
+                `;
+            }
         }
 
         function initializeTimeline() {
@@ -177,52 +289,76 @@
         }
 
         function updateStep(stepIndex) {
-            // Remove active class from all steps
             document.querySelectorAll('.step-box').forEach(box => {
-                box.classList.remove('active');
+                box.classList.remove('active', 'blocked');
                 box.style.opacity = '0.5';
             });
             
             if (stepIndex >= 0 && stepIndex < steps.length) {
+                const step = steps[stepIndex];
                 const stepBox = document.getElementById(`step-${stepIndex}`);
-                stepBox.classList.add('active');
-                stepBox.style.opacity = '1';
+                
+                if (step.blocked) {
+                    stepBox.classList.add('blocked');
+                } else {
+                    stepBox.classList.add('active');
+                    stepBox.style.opacity = '1';
+                }
                 
                 const counterValue = document.getElementById('counterValue');
                 const warningMsg = document.getElementById('warningMsg');
+                const successMsg = document.getElementById('successMsg');
                 
-                // Simulate the race condition
-                if (stepIndex === 0) { // Thread 0 reads
-                    counterValue.textContent = '0';
-                    counterValue.className = 'memory-value bg-cyan-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
-                } else if (stepIndex === 1) { // Thread 1 reads (still 0!)
-                    counterValue.textContent = '0';
-                    counterValue.className = 'memory-value bg-pink-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
-                } else if (stepIndex === 2) { // Thread 0 calculates
-                    counterValue.className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
-                } else if (stepIndex === 3) { // Thread 1 calculates
-                    counterValue.className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
-                } else if (stepIndex === 4) { // Thread 0 writes
-                    counterValue.textContent = '1';
-                    counterValue.className = 'memory-value bg-cyan-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
-                } else if (stepIndex === 5) { // Thread 1 writes (overwrites with 1!)
-                    counterValue.textContent = '1';
-                    counterValue.className = 'memory-value bg-pink-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
-                    warningMsg.classList.remove('hidden');
+                // Update mutex status
+                if (currentMode === 'with') {
+                    const mutexStatus = document.getElementById('mutexStatus');
+                    const mutexOwner = document.getElementById('mutexOwner');
+                    
+                    if (step.mutex === 'lock') {
+                        mutexStatus.textContent = '🔒 已鎖定';
+                        mutexStatus.className = 'mutex-indicator mutex-locked bg-red-600 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+                        mutexOwner.textContent = step.owner === 0 ? '執行緒 0' : '執行緒 1';
+                        mutexOwner.className = step.owner === 0 ? 'bg-cyan-600 text-white font-bold text-2xl px-8 py-4 rounded-lg' : 'bg-pink-600 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+                    } else if (step.mutex === 'unlock') {
+                        mutexStatus.textContent = '🔓 未鎖定';
+                        mutexStatus.className = 'mutex-indicator bg-gray-500 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+                        mutexOwner.textContent = '無';
+                        mutexOwner.className = 'bg-gray-700 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+                    } else if (step.mutex === 'wait') {
+                        // Show waiting state
+                        stepBox.style.opacity = '0.5';
+                    }
                 }
                 
-                setTimeout(() => {
-                    counterValue.classList.remove('highlight');
-                }, 300);
+                // Update counter value
+                if (step.value !== null && step.value !== undefined) {
+                    counterValue.textContent = step.value;
+                    counterValue.className = `memory-value ${step.thread === 0 ? 'bg-cyan-500' : 'bg-pink-500'} text-white font-bold text-3xl px-8 py-4 rounded-lg highlight`;
+                    
+                    setTimeout(() => {
+                        counterValue.classList.remove('highlight');
+                    }, 300);
+                } else if (step.action === '計算') {
+                    counterValue.className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+                }
+                
+                // Show final message
+                if (stepIndex === steps.length - 1) {
+                    if (currentMode === 'without') {
+                        warningMsg.classList.remove('hidden');
+                        successMsg.classList.add('hidden');
+                    } else {
+                        successMsg.classList.remove('hidden');
+                        warningMsg.classList.add('hidden');
+                    }
+                }
             }
         }
 
         function playAnimation() {
             if (currentStep >= steps.length - 1) {
                 currentStep = -1;
-                document.getElementById('counterValue').textContent = '0';
-                document.getElementById('counterValue').className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
-                document.getElementById('warningMsg').classList.add('hidden');
+                resetDisplay();
             }
             
             currentStep++;
@@ -236,22 +372,69 @@
             }
         }
 
+        function resetDisplay() {
+            document.getElementById('counterValue').textContent = '0';
+            document.getElementById('counterValue').className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+            document.getElementById('warningMsg').classList.add('hidden');
+            document.getElementById('successMsg').classList.add('hidden');
+            
+            if (currentMode === 'with') {
+                document.getElementById('mutexStatus').textContent = '🔓 未鎖定';
+                document.getElementById('mutexStatus').className = 'mutex-indicator bg-gray-500 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+                document.getElementById('mutexOwner').textContent = '無';
+                document.getElementById('mutexOwner').className = 'bg-gray-700 text-white font-bold text-2xl px-8 py-4 rounded-lg';
+            }
+        }
+
         function resetAnimation() {
             isPlaying = false;
             currentStep = -1;
             if (animationTimer) {
                 clearTimeout(animationTimer);
             }
-            document.getElementById('counterValue').textContent = '0';
-            document.getElementById('counterValue').className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
-            document.getElementById('warningMsg').classList.add('hidden');
+            resetDisplay();
             document.getElementById('playBtn').textContent = '▶ 開始執行';
             
             document.querySelectorAll('.step-box').forEach(box => {
-                box.classList.remove('active');
+                box.classList.remove('active', 'blocked');
                 box.style.opacity = '0.5';
             });
         }
+
+        function switchMode(mode) {
+            currentMode = mode;
+            steps = mode === 'without' ? stepsWithoutMutex : stepsWithMutex;
+            
+            // Update button styles
+            const withoutBtn = document.getElementById('modeWithoutMutex');
+            const withBtn = document.getElementById('modeWithMutex');
+            
+            if (mode === 'without') {
+                withoutBtn.className = 'mode-btn bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-red-300';
+                withBtn.className = 'mode-btn bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-transparent';
+                document.getElementById('modeDescription').textContent = '目前模式：沒有 Mutex 保護';
+                document.getElementById('mutexIndicator').classList.add('hidden');
+            } else {
+                withoutBtn.className = 'mode-btn bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-transparent';
+                withBtn.className = 'mode-btn bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg border-4 border-green-300';
+                document.getElementById('modeDescription').textContent = '目前模式：使用 Mutex 保護';
+                document.getElementById('mutexIndicator').classList.remove('hidden');
+            }
+            
+            resetAnimation();
+            initializeTimeline();
+            updateExplanation();
+        }
+
+        document.getElementById('modeWithoutMutex').addEventListener('click', (e) => {
+            e.preventDefault();
+            switchMode('without');
+        });
+
+        document.getElementById('modeWithMutex').addEventListener('click', (e) => {
+            e.preventDefault();
+            switchMode('with');
+        });
 
         document.getElementById('playBtn').addEventListener('click', (e) => {
             e.preventDefault();
@@ -308,6 +491,7 @@
         }
 
         initializeTimeline();
+        updateExplanation();
     </script>
- <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ab1797e1631f21c',t:'MTc2NTI1MTU1OC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ab3d13e0328b307',t:'MTc2NTI3NjEyNC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
