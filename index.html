@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-TW" class="h-full">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>競態條件時間序列圖</title>
+  <script src="/_sdk/element_sdk.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+        body {
+            box-sizing: border-box;
+        }
+        
+        .timeline-line {
+            stroke-dasharray: 5, 5;
+            animation: dash 20s linear infinite;
+        }
+        
+        @keyframes dash {
+            to {
+                stroke-dashoffset: -1000;
+            }
+        }
+        
+        .step-box {
+            transition: all 0.3s ease;
+        }
+        
+        .step-box.active {
+            transform: scale(1.05);
+            filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3));
+        }
+        
+        .memory-value {
+            transition: background-color 0.3s ease, transform 0.2s ease;
+        }
+        
+        .memory-value.highlight {
+            transform: scale(1.1);
+        }
+    </style>
+  <style>@view-transition { navigation: auto; }</style>
+  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+ </head>
+ <body class="h-full">
+  <div id="app" class="w-full h-full bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 overflow-auto">
+   <div class="container mx-auto px-4 py-8 max-w-6xl"><!-- Header -->
+    <div class="text-center mb-8">
+     <h1 id="main-title" class="text-4xl font-bold text-white mb-2">競態條件視覺化</h1>
+     <p id="subtitle" class="text-xl text-purple-300">了解多執行緒同時存取共享變數的問題</p>
+    </div><!-- Control Panel -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20">
+     <div class="flex flex-wrap gap-4 items-center justify-center"><button id="playBtn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg"> ▶ 開始執行 </button> <button id="resetBtn" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg"> 🔄 重置 </button>
+      <div class="flex items-center gap-2"><label for="speedSlider" class="text-white font-semibold">速度:</label> <input type="range" id="speedSlider" min="500" max="3000" value="1500" step="500" class="w-32"> <span id="speedLabel" class="text-white">普通</span>
+      </div>
+     </div>
+    </div><!-- Memory Display -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mb-8 border border-white/20">
+     <h2 class="text-2xl font-bold text-white mb-4 text-center">共享記憶體狀態</h2>
+     <div class="flex justify-center items-center gap-8">
+      <div class="text-center">
+       <div class="text-purple-300 font-semibold mb-2">
+        變數 counter
+       </div>
+       <div id="counterValue" class="memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg">
+        0
+       </div>
+      </div>
+      <div class="text-center">
+       <div class="text-purple-300 font-semibold mb-2">
+        預期結果
+       </div>
+       <div class="bg-green-500 text-white font-bold text-3xl px-8 py-4 rounded-lg">
+        2
+       </div>
+      </div>
+     </div>
+     <div id="warningMsg" class="hidden mt-4 bg-red-500 text-white p-4 rounded-lg text-center font-bold">
+      ⚠️ 競態條件發生！最終值不正確！
+     </div>
+    </div><!-- Timeline -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 border border-white/20">
+     <h2 class="text-2xl font-bold text-white mb-6 text-center">執行時間序列</h2><!-- Thread 0 -->
+     <div class="mb-12">
+      <div class="flex items-center mb-4">
+       <div class="w-32 text-right pr-4"><span id="thread0-label" class="text-cyan-400 font-bold text-lg">執行緒 0</span>
+       </div>
+       <div class="flex-1">
+        <svg width="100%" height="60"><line class="timeline-line" x1="0" y1="30" x2="100%" y2="30" stroke="#06b6d4" stroke-width="2" />
+        </svg>
+       </div>
+      </div>
+      <div id="thread0-steps" class="flex gap-4 ml-32 flex-wrap"><!-- Steps will be inserted here -->
+      </div>
+     </div><!-- Thread 1 -->
+     <div>
+      <div class="flex items-center mb-4">
+       <div class="w-32 text-right pr-4"><span id="thread1-label" class="text-pink-400 font-bold text-lg">執行緒 1</span>
+       </div>
+       <div class="flex-1">
+        <svg width="100%" height="60"><line class="timeline-line" x1="0" y1="30" x2="100%" y2="30" stroke="#ec4899" stroke-width="2" />
+        </svg>
+       </div>
+      </div>
+      <div id="thread1-steps" class="flex gap-4 ml-32 flex-wrap"><!-- Steps will be inserted here -->
+      </div>
+     </div>
+    </div><!-- Explanation -->
+    <div class="bg-white/10 backdrop-blur-md rounded-xl p-6 mt-8 border border-white/20">
+     <h2 class="text-2xl font-bold text-white mb-4">💡 為什麼會發生競態條件？</h2>
+     <div class="text-purple-200 space-y-3 leading-relaxed">
+      <p><strong class="text-yellow-400">問題核心：</strong>「讀取-修改-寫入」不是原子操作（atomic operation）</p>
+      <p>當兩個執行緒同時執行 <code class="bg-black/30 px-2 py-1 rounded text-cyan-400">counter++</code> 時：</p>
+      <ol class="list-decimal list-inside space-y-2 ml-4">
+       <li>執行緒 0 讀取 counter = 0</li>
+       <li>執行緒 1 也讀取 counter = 0（還沒被更新！）</li>
+       <li>執行緒 0 計算 0 + 1 = 1，寫入 counter</li>
+       <li>執行緒 1 計算 0 + 1 = 1，再次寫入 counter</li>
+       <li><strong class="text-red-400">結果：counter = 1（應該是 2！）</strong></li>
+      </ol>
+      <p class="mt-4"><strong class="text-green-400">解決方法：</strong>使用互斥鎖（Mutex）或信號量（Semaphore）來保護共享變數</p>
+     </div>
+    </div>
+   </div>
+  </div>
+  <script>
+        const defaultConfig = {
+            main_title: "競態條件視覺化",
+            subtitle: "了解多執行緒同時存取共享變數的問題",
+            thread0_label: "執行緒 0",
+            thread1_label: "執行緒 1"
+        };
+
+        const steps = [
+            { thread: 0, action: "讀取", desc: "讀取 counter", color: "bg-cyan-500" },
+            { thread: 1, action: "讀取", desc: "讀取 counter", color: "bg-pink-500" },
+            { thread: 0, action: "計算", desc: "counter + 1", color: "bg-cyan-600" },
+            { thread: 1, action: "計算", desc: "counter + 1", color: "bg-pink-600" },
+            { thread: 0, action: "寫入", desc: "寫入結果", color: "bg-cyan-700" },
+            { thread: 1, action: "寫入", desc: "寫入結果", color: "bg-pink-700" }
+        ];
+
+        let currentStep = -1;
+        let isPlaying = false;
+        let animationSpeed = 1500;
+        let animationTimer = null;
+
+        async function onConfigChange(config) {
+            document.getElementById('main-title').textContent = config.main_title || defaultConfig.main_title;
+            document.getElementById('subtitle').textContent = config.subtitle || defaultConfig.subtitle;
+            document.getElementById('thread0-label').textContent = config.thread0_label || defaultConfig.thread0_label;
+            document.getElementById('thread1-label').textContent = config.thread1_label || defaultConfig.thread1_label;
+        }
+
+        function initializeTimeline() {
+            const thread0Container = document.getElementById('thread0-steps');
+            const thread1Container = document.getElementById('thread1-steps');
+            
+            thread0Container.innerHTML = '';
+            thread1Container.innerHTML = '';
+            
+            steps.forEach((step, index) => {
+                const stepBox = document.createElement('div');
+                stepBox.className = `step-box ${step.color} text-white p-4 rounded-lg text-center min-w-32 shadow-lg opacity-50`;
+                stepBox.id = `step-${index}`;
+                stepBox.innerHTML = `
+                    <div class="font-bold text-lg">${step.action}</div>
+                    <div class="text-sm mt-1">${step.desc}</div>
+                `;
+                
+                if (step.thread === 0) {
+                    thread0Container.appendChild(stepBox);
+                } else {
+                    thread1Container.appendChild(stepBox);
+                }
+            });
+        }
+
+        function updateStep(stepIndex) {
+            // Remove active class from all steps
+            document.querySelectorAll('.step-box').forEach(box => {
+                box.classList.remove('active');
+                box.style.opacity = '0.5';
+            });
+            
+            if (stepIndex >= 0 && stepIndex < steps.length) {
+                const stepBox = document.getElementById(`step-${stepIndex}`);
+                stepBox.classList.add('active');
+                stepBox.style.opacity = '1';
+                
+                const counterValue = document.getElementById('counterValue');
+                const warningMsg = document.getElementById('warningMsg');
+                
+                // Simulate the race condition
+                if (stepIndex === 0) { // Thread 0 reads
+                    counterValue.textContent = '0';
+                    counterValue.className = 'memory-value bg-cyan-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
+                } else if (stepIndex === 1) { // Thread 1 reads (still 0!)
+                    counterValue.textContent = '0';
+                    counterValue.className = 'memory-value bg-pink-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
+                } else if (stepIndex === 2) { // Thread 0 calculates
+                    counterValue.className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+                } else if (stepIndex === 3) { // Thread 1 calculates
+                    counterValue.className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+                } else if (stepIndex === 4) { // Thread 0 writes
+                    counterValue.textContent = '1';
+                    counterValue.className = 'memory-value bg-cyan-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
+                } else if (stepIndex === 5) { // Thread 1 writes (overwrites with 1!)
+                    counterValue.textContent = '1';
+                    counterValue.className = 'memory-value bg-pink-500 text-white font-bold text-3xl px-8 py-4 rounded-lg highlight';
+                    warningMsg.classList.remove('hidden');
+                }
+                
+                setTimeout(() => {
+                    counterValue.classList.remove('highlight');
+                }, 300);
+            }
+        }
+
+        function playAnimation() {
+            if (currentStep >= steps.length - 1) {
+                currentStep = -1;
+                document.getElementById('counterValue').textContent = '0';
+                document.getElementById('counterValue').className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+                document.getElementById('warningMsg').classList.add('hidden');
+            }
+            
+            currentStep++;
+            updateStep(currentStep);
+            
+            if (currentStep < steps.length - 1 && isPlaying) {
+                animationTimer = setTimeout(playAnimation, animationSpeed);
+            } else {
+                isPlaying = false;
+                document.getElementById('playBtn').textContent = '▶ 開始執行';
+            }
+        }
+
+        function resetAnimation() {
+            isPlaying = false;
+            currentStep = -1;
+            if (animationTimer) {
+                clearTimeout(animationTimer);
+            }
+            document.getElementById('counterValue').textContent = '0';
+            document.getElementById('counterValue').className = 'memory-value bg-yellow-500 text-black font-bold text-3xl px-8 py-4 rounded-lg';
+            document.getElementById('warningMsg').classList.add('hidden');
+            document.getElementById('playBtn').textContent = '▶ 開始執行';
+            
+            document.querySelectorAll('.step-box').forEach(box => {
+                box.classList.remove('active');
+                box.style.opacity = '0.5';
+            });
+        }
+
+        document.getElementById('playBtn').addEventListener('click', (e) => {
+            e.preventDefault();
+            if (!isPlaying) {
+                isPlaying = true;
+                document.getElementById('playBtn').textContent = '⏸ 暫停';
+                playAnimation();
+            } else {
+                isPlaying = false;
+                document.getElementById('playBtn').textContent = '▶ 繼續';
+                if (animationTimer) {
+                    clearTimeout(animationTimer);
+                }
+            }
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', (e) => {
+            e.preventDefault();
+            resetAnimation();
+        });
+
+        document.getElementById('speedSlider').addEventListener('input', (e) => {
+            animationSpeed = parseInt(e.target.value);
+            const speedLabel = document.getElementById('speedLabel');
+            if (animationSpeed <= 1000) {
+                speedLabel.textContent = '快速';
+            } else if (animationSpeed <= 2000) {
+                speedLabel.textContent = '普通';
+            } else {
+                speedLabel.textContent = '慢速';
+            }
+        });
+
+        if (window.elementSdk) {
+            window.elementSdk.init({
+                defaultConfig,
+                onConfigChange,
+                mapToCapabilities: (config) => ({
+                    recolorables: [],
+                    borderables: [],
+                    fontEditable: undefined,
+                    fontSizeable: undefined
+                }),
+                mapToEditPanelValues: (config) => new Map([
+                    ["main_title", config.main_title || defaultConfig.main_title],
+                    ["subtitle", config.subtitle || defaultConfig.subtitle],
+                    ["thread0_label", config.thread0_label || defaultConfig.thread0_label],
+                    ["thread1_label", config.thread1_label || defaultConfig.thread1_label]
+                ])
+            });
+            onConfigChange(window.elementSdk.config);
+        } else {
+            onConfigChange(defaultConfig);
+        }
+
+        initializeTimeline();
+    </script>
+ <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ab1797e1631f21c',t:'MTc2NTI1MTU1OC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
