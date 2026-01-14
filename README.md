@@ -23,7 +23,7 @@
 
 ## 🔗 Demo
 
-> https://catdogbird3.github.io/race-condition-timeline/`
+> https://catdogbird3.github.io/race-condition-timeline/
 
 ---
 
