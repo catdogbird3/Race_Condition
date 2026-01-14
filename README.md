@@ -23,10 +23,7 @@
 
 ## 🔗 Demo
 
-> 建議你部署到 GitHub Pages 之後，把網址貼在這裡
-
-- GitHub Pages：  
-  `https://你的帳號.github.io/race-condition-timeline/`
+> https://catdogbird3.github.io/race-condition-timeline/`
 
 ---
 
